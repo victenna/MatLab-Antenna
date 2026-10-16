@@ -1,28 +1,166 @@
-# MatLab-Antenna
-MATLAB scripts for designing a V2X patch antenna with extended bandwidth and matching optimization.
-# MATLAB V2X Patch Antenna (Extended Bandwidth)
+# Patch Antenna Options — MATLAB / openEMS / CST
 
-MATLAB scripts for designing a V2X patch antenna targeting extended bandwidth. The repository provides a repeatable workflow to explore antenna geometry, evaluate matching performance, and compare design variations efficiently.
+Три скрипта моделируют **одни и те же три варианта** микрополосковой (patch) антенны с коаксиальным зондом для диапазона **V2X 5.9 ГГц** в трёх разных электромагнитных солверах:
 
-## What’s included
-- Defining antenna and substrate parameters (patch, ground plane, feed/network elements)
-- Running parameter sweeps to study the influence of key dimensions
-- Computing and visualizing performance metrics such as S11, impedance matching behavior, resonance characteristics, and bandwidth trends
-- Example setups and configurable scripts so you can start from a baseline and adapt the design to your needs
+| Файл | Солвер | Метод |
+|---|---|---|
+| `Patch_Options_MatLab.m` | MATLAB Antenna Toolbox + RF PCB Toolbox | MoM (метод моментов) |
+| `Patch_Options_OpenEMS.m` | openEMS (через MATLAB-интерфейс) | FDTD |
+| `Patch_Options_CST.py` | CST Studio Suite 2024 (Python API) | построение модели для Frequency Domain солвера |
 
-## Design objective
-A conventional patch antenna often has limited bandwidth. This repository targets wider operating bandwidth by enabling you to investigate design strategies and parameter choices that affect the antenna resonance and matching over frequency.
+Геометрия, подложка и параметры фида во всех трёх файлах согласованы, поэтому результаты (S11, VSWR, импеданс, диаграмма Смита) можно напрямую сравнивать между солверами.
 
-The scripts are structured so you can quickly test how changes in geometry and feed positioning (or coupling-related parameters) influence return loss and the usable frequency range.
+---
 
-## How to use
-1. Clone this repository.
-2. Open the main MATLAB scripts.
-3. Update configuration parameters (substrate properties, antenna dimensions, sweep ranges).
-4. Run simulations and review generated plots/results.
+## Варианты антенны
 
-## Notes
-Results may depend on your MATLAB version, installed toolboxes, and the simulation settings used in the scripts.
+Вариант выбирается одной переменной в начале каждого файла:
 
-## Contributions
-Feel free to open an issue or submit a pull request with improvements (new feeding/matching methods, additional parameter studies, etc.).
+- MATLAB / openEMS: `ANTENNA_OPTION = 1 | 2 | 3`
+- CST: `OPTIONS_TO_BUILD = [3]` (или `[1, 2, 3]` — каждый вариант в отдельный проект)
+
+| Вариант | Патч Lx × Wy, мм | Точка запитки X, мм | Вырез с края патча (dx × dy, мм) | Щели в земле |
+|---|---|---|---|---|
+| **1** — референс | 15.6 × 20.1 | −3.6 | нет | нет |
+| **2** | 17.6 × 32.0 | −6.0 | 2.40 × 18.0 | нет |
+| **3** | 17.6 × 32.8 | −6.7 | 2.75 × 21.7 | 2 щели |
+
+**Общие параметры:**
+
+- Подложка Rogers RT5880: εr = 2.2, tan δ = 0.0009, h = 1.57 мм
+- Земля и подложка: (Lx + 6h) × (Wy + 6h)
+- Точка запитки на оси симметрии (Y = 0)
+- Вырез в патче — прямоугольник глубиной `dx` у правой кромки (по X), длиной `dy` (по Y), центрирован по Y
+- Щели в земле (только вариант 3): длина 24 мм (по X), ширина 3.5 мм (по Y), смещение от кромки патча −0.5 мм; расположены симметрично сверху и снизу патча, Y-центр = ±(Wy/2 − 0.5 + 1.75) мм
+- Центральный проводник (pin): диаметр 1.0 мм
+
+Система координат: центр патча в начале координат, земля в плоскости z = 0, патч в плоскости z = h.
+
+---
+
+## 1. `Patch_Options_MatLab.m` — MATLAB (MoM)
+
+### Требования
+- MATLAB R2024b или новее
+- Antenna Toolbox, RF PCB Toolbox (`pcbStack`, `CoaxialFeed`), RF Toolbox (`sparameters`, `rfparam`, `smithplot`)
+
+### Как работает
+1. **Геометрия.** Патч, вырез и земля собираются из `antenna.Rectangle` булевыми операциями (`patch - slot`, `gnd - slot_top - slot_bot`).
+2. **Коаксиальный фид.** Задаётся через `CoaxialFeed` с площадкой (pad) и антипадом в земле. Диаметр антипада вычисляется из условия Z0 = 50 Ом: `D = d · exp(Z0·√εr / 60)`.
+3. **Сборка.** `pcbStack` с тремя слоями `{патч, подложка, земля}`, `FeedFormat = 'FeedDefinitions'`, проводник — медь.
+4. **Сетка.** `mesh` с `MaxEdgeLength = 2 мм`, `MinEdgeLength = 0.5 мм`; выводится вид сверху.
+5. **S-параметры, адаптивно:**
+   - грубый проход по сетке `linspace(5.2, 6.4 ГГц, 11)`;
+   - поиск интервалов, где VSWR пересекает 2;
+   - в каждом таком интервале досчитываются `M = 4` дополнительные точки — так границы полосы определяются точно без плотной равномерной сетки.
+6. **Сглаживание.** Сплайн-интерполяция S11 на 400 точек — только для гладкости графиков. Полоса определяется по интерполированной кривой, построенной на реально посчитанных точках.
+7. **Графики:** VSWR с выделенной полосой VSWR ≤ 2 и таблицей параметров, входной импеданс R/X, диаграмма Смита с отметкой 5.9 ГГц.
+8. **Диаграмма направленности (5.9 ГГц):** 3D-ДН, срезы в E- (φ = 0°) и H-плоскости (φ = 90°) в дБ, таблица усиления в E-плоскости для углов 0°, 30°, 60°, 70°, 80°, 85° от нормали. Эти разделы обёрнуты в `try/catch`: если функция не поддерживается для данной конфигурации фида, скрипт выводит сообщение и продолжает работу.
+
+### Что менять
+- `ANTENNA_OPTION` — вариант антенны
+- `freqs` — частотная сетка грубого прохода (число точек напрямую влияет на время расчёта)
+- `M` — число уточняющих точек в интервалах пересечения VSWR = 2
+- `a1`, `a2` — максимальный и минимальный размер ячейки сетки
+- `f_rad` — частота расчёта ДН
+
+### Результат
+- `Documents\VSWR_Antenna<N>_MatLab.csv` — частота (ГГц) и VSWR (первая строка — имя скрипта)
+- Фигуры MATLAB (сетка, VSWR, импеданс, Смит, ДН)
+
+---
+
+## 2. `Patch_Options_OpenEMS.m` — openEMS (FDTD)
+
+### Требования
+- [openEMS](https://www.openems.de/) и CSXCAD с MATLAB-интерфейсом (папки `matlab` должны быть в `path` MATLAB)
+- RF Toolbox (для `sparameters`, `smithplot`)
+
+### Как работает
+1. **Геометрия CSX.** Патч и земля — бесконечно тонкие металлы (`AddMetal`). Вырез в патче и щели в земле реализованы через **приоритеты**: «воздушный» бокс с приоритетом 20 накладывается поверх металла с приоритетом 10 — это аналог булева вычитания.
+2. **Потери подложки.** tan δ пересчитывается в проводимость: `κ = 2π·f0·ε0·εr·tan δ`.
+3. **Коаксиальный порт.** Отрезок коаксиала длиной 3 мм под землёй (`AddCoaxialPort`) с тефлоновым заполнением (εr = 2.1); внешний радиус диэлектрика из условия Z0 = 50 Ом. Via-пин соединяет центральный проводник с патчем.
+   - Антипад в земле имеет приоритет 11 — строго между землёй (10) и пином/порта (12), чтобы воздух не разрывал пин в плоскости z = 0.
+4. **Сетка.** Локальное сгущение вокруг пина и коаксиала, явные линии по кромкам выреза и щелей, затем `DetectEdges` + `SmoothMesh` (шаг λ/40 на fmax). Внутри порта по Z принудительно задаётся **равномерный** шаг (требование расчёта порта).
+5. **Возбуждение и границы.** Гауссов импульс f0 = 5.9 ГГц, fc = 1.5 ГГц; PML_8 на всех гранях; расчётная область 150 × 150 × 120 мм; `NrTs = 300000`, `EndCriteria = 1e-4`. Большой `NrTs` нужен для вариантов 2 и 3: сигнал затухает медленно, и ранняя обрезка даёт ложную рябь в S11.
+6. **Расчёт** в `tempdir\tmp_Patch_Ant_Coax_Opt<N>`.
+7. **Постобработка** на сетке `linspace(5.2, 6.2 ГГц, 101)`: S11 (дБ) с отметкой резонанса, диаграмма Смита, VSWR, входной импеданс.
+
+> NF2FF-бокс создаётся, но расчёт дальнего поля в этом скрипте не выполняется — его можно добавить через `CalcNF2FF`.
+
+### Что менять
+- `ANTENNA_OPTION` — вариант антенны
+- `SimBox` — размер расчётной области
+- `NrTs`, `EndCriteria` — длительность расчёта
+- `SmoothMesh(..., c0/(f0+fc)/unit/40, ...)` — плотность сетки (λ/40)
+- `freq` — частотная сетка постобработки
+
+### Результат
+- `Documents\VSWR_Antenna<N>_OpenEMS.csv` — столбцы `Freq_GHz, S11_dB, VSWR, ReZin_Ohm, ImZin_Ohm`
+- `S11_sparams.mat` в папке расчёта
+- В консоли: резонансная частота, S11min, Zin, минимальный VSWR
+
+---
+
+## 3. `Patch_Options_CST.py` — CST Studio Suite (Python)
+
+### Требования
+- CST Studio Suite 2024 с Python API (`cst.interface`)
+- Запуск через `python.bat` из состава CST или из ipython-консоли CST
+
+### Как работает
+Скрипт **строит модель**, но не запускает расчёт. Для каждого варианта из `OPTIONS_TO_BUILD`:
+
+1. Открывает CST Design Environment и создаёт новый проект MWS.
+2. Через `add_to_history` (VBA-команды) задаёт:
+   - единицы (мм, ГГц, нс) и диапазон 5.4–6.4 ГГц;
+   - материалы RT5880 и Teflon;
+   - подложку, землю (PEC, толщина 0), щели в земле (вариант 3) и антипад — через `Solid.Subtract`;
+   - патч (PEC, толщина 0) и вырез с края (варианты 2 и 3);
+   - коаксиал: тефлоновый диэлектрик, PEC-экран толщиной 0.3 мм, пин от низа коаксиала до патча;
+   - **Waveguide Port** на нижнем торце коаксиала (z = −3 мм);
+   - границы `expanded open` на всех гранях;
+   - монитор дальнего поля на 5.9 ГГц.
+3. Сохраняет проект: `SAVE_DIR\SST_Antenna<N>_Coax_WGport.cst`.
+
+### После запуска скрипта (вручную в CST)
+1. Переключить солвер на **Frequency Domain** (Home → Simulation → Solver) — в CST 2024 смена солвера из скрипта не срабатывает.
+2. Запустить расчёт (Start Simulation).
+3. Сравнить S11 / диаграмму Смита с MATLAB и openEMS для того же варианта.
+4. При необходимости экспортировать S11: File → Export → ASCII.
+
+### Что менять
+- `OPTIONS_TO_BUILD` — какие варианты строить
+- `SAVE_DIR` — папка сохранения проектов
+- `ANTENNA_TABLE` — размеры вариантов
+- `ref_plane_distance` — положение опорной плоскости S-параметров относительно порта
+- `f_min`, `f_max`, `f_rad` — частотный диапазон и частота монитора ДН
+
+---
+
+## Различия между моделями фида
+
+Модели согласованы, но не идентичны — это стоит учитывать при сравнении:
+
+| | MATLAB | openEMS | CST |
+|---|---|---|---|
+| Фид | `CoaxialFeed` (pad/antipad в земле) | коаксиальный порт 3 мм под землёй | физический коаксиал 3 мм + Waveguide Port |
+| εr для расчёта 50 Ом | 2.2 (подложка) | 2.1 (тефлон) | 2.1 (тефлон) |
+| Металл | медь | PEC, толщина 0 | PEC, толщина 0 |
+| Частотный диапазон | 5.2–6.4 ГГц | 5.2–6.2 ГГц | 5.4–6.4 ГГц |
+
+---
+
+## Быстрый старт
+
+```
+1. Выберите вариант:      ANTENNA_OPTION = 3   (MATLAB, openEMS)
+                          OPTIONS_TO_BUILD = [3]  (CST)
+2. MATLAB:   run Patch_Options_MatLab.m
+3. openEMS:  run Patch_Options_OpenEMS.m
+4. CST:      python.bat Patch_Options_CST.py  → Frequency Domain → Start Simulation
+5. Сравните CSV-файлы VSWR_Antenna3_*.csv в папке Documents
+```
+
+## Автор
+Vittorio Rabinovich — Toronto, Canada
